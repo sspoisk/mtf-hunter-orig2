@@ -1,0 +1,36 @@
+{
+  "telegram_bot_token": "",
+  "telegram_chat_id": "",
+  "exchange": "okx",
+  "trade_mode": "PAPER",
+  "port": 8092,
+  "debug": false,
+
+  "strategy": {
+    "ema_period": 30,
+    "rsi_period": 14,
+    "rsi_lo": 40,
+    "rsi_hi": 60,
+    "sl_bars": 5,
+    "rr": 2.5,
+    "max_hold_hours": 48,
+    "scan_interval_min": 5
+  },
+
+  "trading": {
+    "position_size": 100,
+    "leverage": 1,
+    "max_positions": 10
+  },
+
+  "symbols": [
+    "ZRO/USDT:USDT", "WIF/USDT:USDT", "BERA/USDT:USDT", "DOT/USDT:USDT",
+    "YFI/USDT:USDT", "AXS/USDT:USDT", "TAO/USDT:USDT", "OP/USDT:USDT",
+    "TRB/USDT:USDT", "ICP/USDT:USDT", "ZEN/USDT:USDT", "DYDX/USDT:USDT",
+    "BCH/USDT:USDT", "AAVE/USDT:USDT", "INJ/USDT:USDT", "UNI/USDT:USDT",
+    "APE/USDT:USDT", "CRV/USDT:USDT", "ENS/USDT:USDT", "ETH/USDT:USDT",
+    "SOL/USDT:USDT", "BNB/USDT:USDT", "LINK/USDT:USDT", "AVAX/USDT:USDT",
+    "LTC/USDT:USDT", "FIL/USDT:USDT", "AR/USDT:USDT", "NMR/USDT:USDT",
+    "ORDI/USDT:USDT", "APT/USDT:USDT", "SUI/USDT:USDT", "KSM/USDT:USDT"
+  ]
+}
