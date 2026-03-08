@@ -193,7 +193,7 @@ def _do_scan():
         })
 
         if sig:
-            found.append({
+            sig_data = {
                 'symbol':    sym,
                 'name':      sym.split('/')[0],
                 'direction': sig['direction'],
@@ -206,9 +206,16 @@ def _do_scan():
                 'trend':     sig['trend'],
                 'rr':        sig['rr'],
                 'found_at':  now_str(),
-            })
+            }
+            found.append(sig_data)
             logger.info(f"  SIGNAL: {sym} {sig['direction']} RSI={sig['rsi']:.1f} "
                         f"trend={sig['trend']}")
+            # Автооткрытие позиции
+            if cfg.get('auto_trade', True):
+                pos = trader.open_position(sym, sig)
+                if pos:
+                    logger.info(f"  AUTO-OPEN: {sym} {sig['direction']} id={pos.id}")
+                    push_event({'type': 'position_opened', 'symbol': sym})
         time.sleep(0.15)
 
     with scan_lock:
