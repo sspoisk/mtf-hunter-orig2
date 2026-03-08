@@ -86,8 +86,8 @@ body { font-family:'JetBrains Mono',monospace; background:var(--bg); color:var(-
 .chart-tf-btns { display:flex; gap:4px; margin-left:auto; }
 .tf-btn { padding:3px 8px; border:1px solid var(--border); background:transparent; color:var(--text3); font-family:inherit; font-size:0.68rem; cursor:pointer; border-radius:4px; }
 .tf-btn.active { border-color:var(--cyan); color:var(--cyan); }
-#chart-container { flex:1; background:var(--bg); }
-.chart-placeholder { display:flex; align-items:center; justify-content:center; height:100%; color:var(--text3); font-size:0.9rem; }
+#chart-container { flex:1; background:var(--bg); min-height:0; }
+#chart-placeholder { flex:1; display:flex; align-items:center; justify-content:center; color:var(--text3); font-size:0.9rem; }
 
 /* ── BOTTOM STATS ── */
 .bottom-bar { padding:8px 16px; background:var(--bg2); border-top:1px solid var(--border); display:flex; gap:20px; font-size:0.7rem; color:var(--text3); flex-shrink:0; }
@@ -140,7 +140,10 @@ body { font-family:'JetBrains Mono',monospace; background:var(--bg); color:var(-
   <!-- LEFT: сигналы и позиции -->
   <div class="left-panel">
     <div class="panel-tabs">
-      <button class="ptab active" onclick="switchTab('signals',this)">
+      <button class="ptab active" onclick="switchTab('watchlist',this)">
+        Watch <span class="cnt" id="wl-count">0</span>
+      </button>
+      <button class="ptab" onclick="switchTab('signals',this)">
         Signals <span class="cnt" id="sig-count">0</span>
       </button>
       <button class="ptab" onclick="switchTab('positions',this)">
@@ -151,7 +154,8 @@ body { font-family:'JetBrains Mono',monospace; background:var(--bg); color:var(-
       </button>
     </div>
     <div class="panel-body">
-      <div id="tab-signals"></div>
+      <div id="tab-watchlist"></div>
+      <div id="tab-signals" style="display:none"></div>
       <div id="tab-positions" style="display:none"></div>
       <div id="tab-history" style="display:none"></div>
     </div>
@@ -169,9 +173,8 @@ body { font-family:'JetBrains Mono',monospace; background:var(--bg); color:var(-
         <button class="tf-btn" onclick="setTf('15m',this)">15m</button>
       </div>
     </div>
-    <div id="chart-container">
-      <div class="chart-placeholder">← Выбери пару из списка</div>
-    </div>
+    <div id="chart-placeholder" class="chart-placeholder">← Выбери пару из списка</div>
+    <div id="chart-container" style="flex:1;display:none;"></div>
   </div>
 </div>
 
@@ -267,10 +270,11 @@ body { font-family:'JetBrains Mono',monospace; background:var(--bg); color:var(-
 // ═══════════════════════════════════════════════════════════
 // STATE
 // ═══════════════════════════════════════════════════════════
-let signals = [];
-let openPos  = [];
-let history  = [];
-let stats    = {};
+let signals   = [];
+let watchlist = [];
+let openPos   = [];
+let history   = [];
+let stats     = {};
 let activeTab = 'signals';
 let selectedSym = null;
 let selectedSig = null;
@@ -305,6 +309,11 @@ async function api(url, method='GET', body=null) {
 }
 
 async function loadAll() {
+  // Watchlist
+  const wl = await api('/api/watchlist');
+  watchlist = wl || [];
+  document.getElementById('wl-count').textContent = watchlist.length;
+
   // Сигналы
   const sigs = await api('/api/signals');
   signals = sigs;
@@ -312,9 +321,13 @@ async function loadAll() {
 
   // Позиции + статистика
   const pos = await api('/api/positions');
-  openPos  = pos.open   || [];
-  history  = pos.closed || [];
-  stats    = pos.stats  || {};
+  openPos = pos.open  || [];
+  stats   = pos.stats || {};
+
+  // История из БД
+  const hist = await api('/api/history?limit=100');
+  history = hist.positions || [];
+  if (hist.stats && hist.stats.total > 0) stats = hist.stats;
   document.getElementById('pos-count').textContent = openPos.length;
 
   // Статус
@@ -356,9 +369,42 @@ async function loadConfig() {
 // RENDER
 // ═══════════════════════════════════════════════════════════
 function renderActive() {
+  if (activeTab === 'watchlist') renderWatchlist();
   if (activeTab === 'signals')   renderSignals();
   if (activeTab === 'positions') renderPositions();
   if (activeTab === 'history')   renderHistory();
+}
+
+function renderWatchlist() {
+  const el = document.getElementById('tab-watchlist');
+  if (!watchlist.length) {
+    el.innerHTML = '<div class="empty">Загрузка...</div>';
+    return;
+  }
+  el.innerHTML = watchlist.map(w => {
+    const hasSig = !!w.signal;
+    const trendUp = w.trend === 'UP';
+    const rsiColor = w.rsi === null ? 'var(--text3)' :
+      (trendUp && w.rsi < 45) ? 'var(--orange)' :
+      (!trendUp && w.rsi > 55) ? 'var(--orange)' : 'var(--text2)';
+    const borderStyle = hasSig ? 'border-left:2px solid var(--cyan)' : '';
+    const isActive = selectedSym === w.symbol;
+    return `
+    <div class="sig-card ${isActive?'active':''}" style="${borderStyle}" onclick="selectWatchitem('${w.symbol}')">
+      <div class="sig-top">
+        <span class="sig-sym">${w.name}</span>
+        <span style="font-size:.7rem;color:${trendUp?'var(--green)':'var(--red)'}">
+          ${trendUp?'▲ UP':'▼ DN'}
+        </span>
+        ${hasSig ? `<span class="sig-dir ${w.signal==='LONG'?'long':'short'}">${w.signal}</span>` : ''}
+      </div>
+      <div class="sig-meta" style="justify-content:space-between">
+        <span>RSI <span style="color:${rsiColor};font-weight:600">${w.rsi !== null ? w.rsi : '—'}</span></span>
+        <span style="color:var(--text3)">${w.near || ''}</span>
+        <span style="color:var(--cyan)">${w.price ? fmtPrice(w.price) : ''}</span>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 function renderSignals() {
@@ -475,14 +521,23 @@ function updateStats() {
 // ═══════════════════════════════════════════════════════════
 function initChart() {
   const container = document.getElementById('chart-container');
+  container.style.display = 'block';
+  document.getElementById('chart-placeholder').style.display = 'none';
+
+  // Если уже инициализирован — только resize
+  if (chart) {
+    chart.resize(container.clientWidth, container.clientHeight);
+    return;
+  }
+
   chart = LightweightCharts.createChart(container, {
     layout: { background:{color:'#0a0e17'}, textColor:'#94a3b8' },
     grid:   { vertLines:{color:'#1a1f2e'}, horzLines:{color:'#1a1f2e'} },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
     rightPriceScale: { borderColor:'#2d3748' },
     timeScale: { borderColor:'#2d3748', timeVisible:true },
-    width:  container.clientWidth,
-    height: container.clientHeight,
+    width:  container.clientWidth  || window.innerWidth - 340,
+    height: container.clientHeight || window.innerHeight - 120,
   });
   candleSeries = chart.addCandlestickSeries({
     upColor:'#00ff88', downColor:'#ef4444',
@@ -490,12 +545,12 @@ function initChart() {
     wickUpColor:'#00ff88', wickDownColor:'#ef4444',
   });
   window.addEventListener('resize', () => {
-    chart.resize(container.clientWidth, container.clientHeight);
+    if (chart) chart.resize(container.clientWidth, container.clientHeight);
   });
 }
 
 async function loadChart(symbol, tf, sig) {
-  if (!chart) initChart();
+  initChart();  // показывает контейнер и создаёт chart если нужно
   document.getElementById('chart-sym').textContent = symbol.split('/')[0] + '/USDT';
   document.getElementById('chart-dir').textContent = sig ?
     `${sig.direction}  SL ${fmtPrice(sig.sl)}  TP ${fmtPrice(sig.tp)}` : '';
@@ -538,6 +593,16 @@ function setTf(tf, btn) {
 // ═══════════════════════════════════════════════════════════
 // ACTIONS
 // ═══════════════════════════════════════════════════════════
+function selectWatchitem(sym) {
+  selectedSym = sym;
+  selectedSig = null;
+  // Если по этому символу есть сигнал — подставляем его
+  const sig = signals.find(s => s.symbol === sym);
+  if (sig) selectedSig = sig;
+  loadChart(sym, currentTf, selectedSig);
+  renderWatchlist();
+}
+
 function selectSignal(sym, sig) {
   selectedSym = sym;
   selectedSig = sig;
@@ -631,6 +696,7 @@ function switchTab(tab, btn) {
   activeTab = tab;
   document.querySelectorAll('.ptab').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
+  document.getElementById('tab-watchlist').style.display = tab === 'watchlist' ? '' : 'none';
   document.getElementById('tab-signals').style.display   = tab === 'signals'   ? '' : 'none';
   document.getElementById('tab-positions').style.display = tab === 'positions' ? '' : 'none';
   document.getElementById('tab-history').style.display   = tab === 'history'   ? '' : 'none';
@@ -656,7 +722,7 @@ function showToast(msg, type='success') {
 // ═══════════════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════════════
-initChart();
+activeTab = 'watchlist';
 loadAll();
 loadConfig();
 initSSE();

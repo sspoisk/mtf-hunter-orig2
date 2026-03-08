@@ -9,6 +9,7 @@ import threading
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional
+import db
 
 logger = logging.getLogger(__name__)
 TZ = timedelta(hours=2)
@@ -67,7 +68,6 @@ class MTFTrader:
 
     def open_position(self, symbol: str, signal: dict) -> Optional[Position]:
         with self.lock:
-            # Уже есть открытая позиция по этому символу?
             for p in self.positions.values():
                 if p.symbol == symbol and p.status == 'OPEN':
                     return None
@@ -91,6 +91,7 @@ class MTFTrader:
                 status        = 'OPEN',
             )
             self.positions[pos.id] = pos
+            db.save_position_open(pos)
             logger.info(f"[OPEN] {symbol} {pos.side} @ {pos.entry_price} "
                         f"SL={pos.stop_loss} TP={pos.take_profit}")
             return pos
@@ -140,12 +141,13 @@ class MTFTrader:
         pos = self.positions.pop(pid, None)
         if not pos:
             return
-        pos.status       = 'CLOSED'
-        pos.close_reason = reason
-        pos.closed_at    = now_str()
+        pos.status        = 'CLOSED'
+        pos.close_reason  = reason
+        pos.closed_at     = now_str()
         pos.current_price = price
         pos.pnl_usdt, pos.pnl_pct = pos.calc_pnl()
         self.closed.append(pos.to_dict())
+        db.save_position_close(pos)
         logger.info(f"[CLOSE] {pos.symbol} {pos.side} reason={reason} "
                     f"pnl={pos.pnl_usdt:+.2f}$")
 

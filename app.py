@@ -28,6 +28,7 @@ from flask import Flask, render_template, jsonify, request, Response
 from werkzeug.middleware.proxy_fix import ProxyFix
 from strategy import check_signal
 from trader import MTFTrader
+import db
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -61,6 +62,7 @@ def no_cache_html(r):
 trader   = MTFTrader(cfg)
 exchange = None
 signals: list  = []          # текущие активные сигналы (не открытые позиции)
+watchlist: list = []         # все пары с RSI/trend (обновляется при каждом скане)
 scan_lock      = threading.Lock()
 last_scan_at   = None
 sse_clients: list = []        # для Server-Sent Events
@@ -124,13 +126,16 @@ def scan_loop():
 
 
 def _do_scan():
-    global signals, last_scan_at, cfg
+    global signals, watchlist, last_scan_at, cfg
     cfg = load_config()
     strategy_cfg = cfg.get('strategy', {})
     symbols = cfg.get('symbols', [])
+    rsi_lo = strategy_cfg.get('rsi_lo', 40)
+    rsi_hi = strategy_cfg.get('rsi_hi', 60)
 
     logger.info(f"[SCAN] Scanning {len(symbols)} symbols...")
     found = []
+    wl    = []
     prices = {}
 
     for sym in symbols:
@@ -142,6 +147,50 @@ def _do_scan():
         price = candles[-1][4] if candles else None
         if price:
             prices[sym] = price
+
+        # Всегда собираем данные для watchlist
+        rsi_val  = sig['rsi']   if sig else None
+        trend    = sig['trend'] if sig else None
+        # Если нет сигнала — вычислим RSI/trend отдельно для watchlist
+        if not sig:
+            try:
+                from strategy import _rsi as _s_rsi, _ema as _s_ema
+                import numpy as np
+                arr   = np.array(candles, dtype=float)
+                close = arr[:, 4]
+                n     = len(close)
+                r_arr = _s_rsi(close, strategy_cfg.get('rsi_period', 14))
+                rsi_val = round(float(r_arr[n-2]), 1) if n > 14 else None
+                groups  = n // 4
+                c4h     = np.array([arr[g*4:(g+1)*4,4][-1] for g in range(groups)])
+                ema4    = _s_ema(c4h, strategy_cfg.get('ema_period', 30))
+                idx4    = (n-2) // 4
+                if idx4 < len(ema4) and not (ema4[idx4] != ema4[idx4]):
+                    trend = 'UP' if c4h[idx4] > ema4[idx4] else 'DOWN'
+            except Exception:
+                pass
+
+        # Насколько далеко до сигнала
+        near = None
+        if rsi_val is not None and trend is not None:
+            if trend == 'UP':
+                # Нужен RSI < rsi_lo. Расстояние = rsi_val - rsi_lo
+                dist = round(rsi_val - rsi_lo, 1)
+                near = f"RSI -{dist} до LONG" if dist > 0 else "LONG READY"
+            else:
+                # Нужен RSI > rsi_hi
+                dist = round(rsi_hi - rsi_val, 1)
+                near = f"RSI +{dist} до SHORT" if dist > 0 else "SHORT READY"
+
+        wl.append({
+            'symbol': sym,
+            'name':   sym.split('/')[0],
+            'price':  round(price, 6) if price else None,
+            'rsi':    rsi_val,
+            'trend':  trend,
+            'near':   near,
+            'signal': sig['direction'] if sig else None,
+        })
 
         if sig:
             found.append({
@@ -163,11 +212,18 @@ def _do_scan():
         time.sleep(0.15)
 
     with scan_lock:
-        signals = found
+        signals   = found
+        watchlist = sorted(wl, key=lambda x: (
+            0 if x['signal'] else
+            1 if x['near'] and 'READY' in x['near'] else 2,
+            float(x['rsi']) if x['rsi'] else 50
+        ))
         last_scan_at = now_str()
 
-    # Обновляем цены в трейдере
     trader.update_prices(prices)
+    if found:
+        db.save_signals(found)
+    db.log_event('scan', data={'symbols': len(symbols), 'signals': len(found)})
 
     logger.info(f"[SCAN] Done. Signals: {len(found)}")
     push_event({'type': 'scan_done', 'count': len(found), 'at': last_scan_at})
@@ -289,6 +345,24 @@ def api_config_post():
     return jsonify({'ok': True})
 
 
+@app.route('/api/history')
+def api_history():
+    """История из БД — все закрытые позиции + сигналы."""
+    limit  = int(request.args.get('limit', 100))
+    symbol = request.args.get('symbol')
+    return jsonify({
+        'positions': db.get_closed_positions(limit, symbol),
+        'signals':   db.get_signals_history(limit),
+        'stats':     db.get_stats(),
+        'events':    db.get_events(50),
+    })
+
+
+@app.route('/api/watchlist')
+def api_watchlist():
+    return jsonify(watchlist)
+
+
 @app.route('/api/candles')
 def api_candles():
     """Свечи для графика (LightweightCharts)."""
@@ -327,8 +401,36 @@ def stream():
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+def restore_positions():
+    """Восстанавливаем открытые позиции из БД после рестарта."""
+    from trader import Position
+    rows = db.load_open_positions()
+    for r in rows:
+        pos = Position(
+            id             = r['id'],
+            symbol         = r['symbol'],
+            side           = r['side'],
+            entry_price    = r['entry_price'],
+            current_price  = r['entry_price'],
+            stop_loss      = r['stop_loss'],
+            take_profit    = r['take_profit'],
+            size_usdt      = r['size_usdt'],
+            sl_pct         = r['sl_pct'] or 0,
+            tp_pct         = r['tp_pct'] or 0,
+            rsi_at_entry   = r['rsi_at_entry'] or 0,
+            trend_at_entry = r['trend_at_entry'] or '',
+            opened_at      = r['opened_at'] or '',
+            status         = 'OPEN',
+        )
+        trader.positions[pos.id] = pos
+    if rows:
+        logger.info(f"[DB] Restored {len(rows)} open positions")
+
+
 def main():
+    db.init_db()
     init_exchange()
+    restore_positions()
 
     # Фоновые потоки
     threading.Thread(target=scan_loop,  daemon=True, name='scanner').start()
